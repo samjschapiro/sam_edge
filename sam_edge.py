@@ -137,6 +137,7 @@ def train(params,
     if (hessian_check_gap and
         (time.time() > last_hessian_check + 3600.0*hessian_check_gap)):
       original_gradient = grad(loss_by_params)(params, x, y)
+      # TODO: add get_second_order_sam_gradient(params, x, y)
       sam_gradient = get_sam_gradient(params, x, y)
       if num_principal_comps == 1:
         curvature, principal_dir = ce.curvature_and_direction(params, x, y)
