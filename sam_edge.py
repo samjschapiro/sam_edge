@@ -46,6 +46,7 @@ def train(params,
           raw_data_filename,
           num_principal_comps,
           time_limit_in_hours,
+          second_order,
           rng):
   """Train a model using SAM, and plot statistics.
 
@@ -84,11 +85,24 @@ def train(params,
     return tree_util.tree_map(lambda p, g: p + rho * g/(norm + EPSILON),
                               params,
                               grads)
+  
+  @jit
+  def second_order_sam_neighbor(params, x, y, principal_dir, approx_hessian=False):
+    # TODO: Finish/redo this function using the tree shit
+    # Initialize curvature estimator
+    # Get max eigenvector
+    # Get max eigenvector norm
+    # Return new params p + rho * v/(v + EPSILON)
+    if not approx_hessian:
+      norm = mtu.get_vector_norm(principal_dir)
+      return tree_util.tree_map(lambda p, d: p + rho * d/(norm + EPSILON),
+                                params,
+                                principal_dir)
 
   @jit
-  def update(params, x, y, eta):
+  def update(params, x, y, eta, principal_dir):
     if rho > 0.0:
-      grad_location = sam_neighbor(params, x, y)
+      grad_location = sam_neighbor(params, x, y) if second_order == False else second_order_sam_neighbor(params, x, y, principal_dir)
     else:
       grad_location = params
     grads = grad(loss_by_params)(grad_location, x, y)
@@ -99,6 +113,11 @@ def train(params,
   @jit
   def get_sam_gradient(params, x, y):
     grad_location = sam_neighbor(params, x, y)
+    return grad(loss_by_params)(grad_location, x, y)
+
+  @jit
+  def get_second_order_sam_gradient(params, x, y, principal_dir):
+    grad_location = second_order_sam_neighbor(params, x, y, principal_dir)
     return grad(loss_by_params)(grad_location, x, y)
 
   eta = step_size
@@ -122,6 +141,7 @@ def train(params,
     for i in range(num_principal_comps):
       plot_data.eigenvalues.append(list())
 
+  principal_dir = None
   ce = hessian_norm.CurvatureEstimator(loss_by_params, rng)
 
   print("starting training", flush=True)
@@ -137,10 +157,12 @@ def train(params,
     if (hessian_check_gap and
         (time.time() > last_hessian_check + 3600.0*hessian_check_gap)):
       original_gradient = grad(loss_by_params)(params, x, y)
-      # TODO: add get_second_order_sam_gradient(params, x, y)
-      sam_gradient = get_sam_gradient(params, x, y)
+      if second_order:
+         curvature, principal_dir = ce.curvature_and_direction(params, x, y)
+      sam_gradient = get_sam_gradient(params, x, y) if second_order == False else get_second_order_sam_gradient(params, x, y, principal_dir)
       if num_principal_comps == 1:
-        curvature, principal_dir = ce.curvature_and_direction(params, x, y)
+        if not second_order:
+          curvature, principal_dir = ce.curvature_and_direction(params, x, y)
         this_hessian_norm = jnp.abs(curvature)
       else:
         print("calculating principal components", flush=True)
@@ -205,7 +227,7 @@ def train(params,
           raw_data_file.write(format_string.format(*columns))
       last_hessian_check = time.time()
 
-    params = update(params, x, y, eta)
+    params = update(params, x, y, eta, principal_dir)
 
   if (plot_data.sam_edges
       and (not jnp.isnan(jnp.array(plot_data.training_losses)).any())):

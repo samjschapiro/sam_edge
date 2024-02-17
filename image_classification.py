@@ -67,6 +67,11 @@ parser.add_argument("--mlp_width",
                     type=int,
                     default=1000)
 
+
+parser.add_argument("--second_order",
+                    type=bool,
+                    default=False)
+
 parser.add_argument("--cnn_num_blocks",
                     type=int,
                     default=2)
@@ -309,6 +314,7 @@ params = sam_edge.train(params,
                         args.raw_data_output,
                         args.num_principal_components,
                         args.time_limit_in_hours,
+                        args.second_order,
                         rng)
 
 test_err = test_error_fn(params, model, test_batches)

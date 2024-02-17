@@ -71,6 +71,42 @@ class CurvatureEstimator:
                                 minus_gradient)
 
     return hessian_vector_product_wo_self(params, x, y, vector)
+  
+
+  def gn_hessian_vector_product(self, params, x, y, vector):
+    """Compute the product between the approximate Hessian (only GN matrix) and a vector.
+
+    Args:
+      params: a pytree with the parameters of the model
+      x: feature tensor
+      y: label tensor
+      vector: a pytree of the same shape as params
+
+    Returns:
+      The product of the approximate Hessian of the loss with the vector.
+    """
+
+    @jit
+    def gn_hessian_vector_product_wo_self(params, x, y, vector):
+    # doesn't take self as an input, so that it can be jitted
+      eps = DIFFERENTIATION_STEP_SIZE
+
+      plus_location = tree_util.tree_map(lambda theta, v: theta + eps*v,
+                                        params,
+                                        vector)
+      plus_gradient = self.loss_grad(plus_location, x, y)
+      minus_location = tree_util.tree_map(lambda theta, v: theta - eps*v,
+                                          params,
+                                          vector)
+      minus_gradient = self.loss_grad(minus_location, x, y)
+      # pylint: disable=g-long-lambda
+      return tree_util.tree_map(lambda x, y: ((x - y)/
+                                              (2.0*eps
+                                              + mtu.NORMALIZING_EPS)),
+                                plus_gradient,
+                                minus_gradient)
+
+    return gn_hessian_vector_product_wo_self(params, x, y, vector)
 
   def curvature_and_direction(self, params, x, y):
     self.rng, subkey = jax.random.split(self.rng)
