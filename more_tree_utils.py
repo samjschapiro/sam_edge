@@ -18,9 +18,9 @@ import jax
 from jax import jit
 from jax import tree_util
 import jax.numpy as jnp
+import hessian_norm as hes
 
 NORMALIZING_EPS = 1e-5
-
 
 @jit
 def normalize(t):
