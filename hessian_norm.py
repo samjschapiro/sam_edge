@@ -72,6 +72,38 @@ class CurvatureEstimator:
 
     return hessian_vector_product_wo_self(params, x, y, vector)
   
+  def second_moment_vector_product(self, params, x, y, vector):
+    """Compute the product between the Second Moment Matrix and a vector.
+
+    Args:
+      params: a pytree with the parameters of the model
+      x: feature tensor
+      y: label tensor
+      vector: a pytree of the same shape as params
+
+    Returns:
+      The product of the Second Moment Matrix of the loss with the vector.
+    """
+
+    @jit
+    def second_moment_matrix_vector_product_wo_self(params, x, y, vector):
+      # doesn't take self as an input, so that it can be jitted
+      eps = DIFFERENTIATION_STEP_SIZE
+
+      # Compute gradients with perturbed parameters
+      plus_location = tree_util.tree_map(lambda theta, v: theta + eps*v, params, vector)
+      plus_gradient = self.loss_grad(plus_location, x, y)
+      minus_location = tree_util.tree_map(lambda theta, v: theta - eps*v, params, vector)
+      minus_gradient = self.loss_grad(minus_location, x, y)
+
+      # Compute outer product of gradients
+      outer_product = tree_util.tree_multimap(lambda pg, mg: jnp.outer(pg, mg), plus_gradient, minus_gradient)
+
+      # Average the outer product over perturbations
+      averaged_outer_product = tree_util.tree_map(lambda op: op / (2.0 * eps + mtu.NORMALIZING_EPS), outer_product)
+
+      return averaged_outer_product
+    return second_moment_matrix_vector_product_wo_self(params, x, y, vector)
 
   def curvature_and_direction(self, params, x, y):
     self.rng, subkey = jax.random.split(self.rng)
