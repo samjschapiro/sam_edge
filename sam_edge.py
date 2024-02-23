@@ -326,11 +326,11 @@ def train(params,
       plt.plot(plot_data.training_times,
                plot_data.sam_gradients,
                color="b",
-               label="SAM gradient norm")
+               label="$\| g_{sam} \|$")
       plt.plot(plot_data.training_times,
               plot_data.sgd_gradients,
               color="r",
-              label="SGD gradient norm")
+              label="$\| g \|$")
       plt.legend()
 
       plt.savefig(sam_grad_norm_output, format="pdf", dpi=DPI)
@@ -344,13 +344,13 @@ def train(params,
       plt.plot(plot_data.training_times,
                plot_data.sam_grad_unif_kl,
                color="b",
-               label="$KL(g_sam, Unif)$")
+               label="$KL(g_{sam}, Unif)$")
       plt.plot(plot_data.training_times,
               plot_data.sgd_gradient_unif_kl,
               color="r",
-              label="$KL(g, Unif)")
+              label="$KL(g, Unif)$")
       plt.legend()
 
-      plt.savefig(sam_grad_norm_output, format="pdf", dpi=DPI)
+      plt.savefig(grad_unif_kl_output, format="pdf", dpi=DPI)
 
   return params
