@@ -22,6 +22,7 @@ import hessian_norm
 from jax import grad
 from jax import jit
 from jax import tree_util
+import jax.random as jrandom
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
@@ -29,8 +30,6 @@ import more_tree_utils as mtu
 
 EPSILON = 1e-5
 DPI = 300
-DIFFERENTIATION_STEP_SIZE = 0.001
-POWER_ITERATION_EPS = 0.001  # relative error
 
 # pylint: disable=anomalous-backslash-in-string
 
@@ -47,9 +46,10 @@ def train(params,
           alignment_curve_filename,
           loss_curve_filename,
           raw_data_filename,
+          sam_grad_norm_output,
+          grad_unif_kl_output,
           num_principal_comps,
           time_limit_in_hours,
-          second_order,
           rng):
   """Train a model using SAM, and plot statistics.
 
@@ -88,24 +88,12 @@ def train(params,
     return tree_util.tree_map(lambda p, g: p + rho * g/(norm + EPSILON),
                               params,
                               grads)
-
-  # @jit
-  # def get_max_eigenvector(params, x, y):
-  #   max_eig_vecs = tree_util.tree_map(lambda p, x, y: ce.curvature_and_direction(p, x, y)[1], params, x, y)  
-  #   max_eig_vecs_norms = mtu.get_vector_norm(max_eig_vecs)
-  #   return max_eig_vecs, max_eig_vecs_norms
   
-  @jit
-  def second_order_sam_neighbor(params, x, y, approx_hessian=False):
-    if not approx_hessian:
-      v1,_ = tree_util.tree_map(lambda p, x, y: ce.curvature_and_direction(p, x, y)[1], params, x, y)
-      norm = mtu.get_vector_norm(v1)
-      return tree_util.tree_map(lambda p: p + rho * v1/(norm + EPSILON), params)
 
   @jit
   def update(params, x, y, eta):
     if rho > 0.0:
-      grad_location = sam_neighbor(params, x, y) if second_order == False else second_order_sam_neighbor(params, x, y)
+      grad_location = sam_neighbor(params, x, y) 
     else:
       grad_location = params
     grads = grad(loss_by_params)(grad_location, x, y)
@@ -118,96 +106,6 @@ def train(params,
     grad_location = sam_neighbor(params, x, y)
     return grad(loss_by_params)(grad_location, x, y)
 
-  @jit
-  def get_second_order_sam_gradient(params, x, y):
-    grad_location = second_order_sam_neighbor(params, x, y)
-    return grad(loss_by_params)(grad_location, x, y)
-  
-  # NEW!! #TODO: JIT THIS!
-
-  @jit
-  def hessian_vector_product(params, x, y, vector):
-    """Compute the product between the Hessian and a vector.
-
-  Args:
-    params: a pytree with the parameters of the model
-    x: feature tensor
-    y: label tensor
-    vector: a pytree of the same shape as params
-
-  Returns:
-    The product of the Hessian of the loss with the vector.
-  """
-    eps = DIFFERENTIATION_STEP_SIZE
-
-    plus_location = tree_util.tree_map(lambda theta, v: theta + eps*v,
-                                        params,
-                                        vector)
-    plus_gradient = grad(loss_by_params)(plus_location, x, y)
-    minus_location = tree_util.tree_map(lambda theta, v: theta - eps*v,
-                                        params,
-                                        vector)
-    minus_gradient = grad(loss_by_params)(minus_location, x, y)
-    # pylint: disable=g-long-lambda
-    return tree_util.tree_map(lambda x, y: ((x - y)/
-                                            (2.0*eps
-                                              + mtu.NORMALIZING_EPS)),
-                              plus_gradient,
-                              minus_gradient)
-
-  def curvature_and_direction(self, params, x, y):
-      self.rng, subkey = jax.random.split(self.rng)
-      v = mtu.get_random_direction(subkey, params)
-
-      return self.curvature_and_direction_with_start(params, x, y, v)
-  
-  @jit
-  def iteration(old_v):
-    # perform hessian-vector product
-    product = hessian_vector_product(params, x, y, old_v)
-
-    # calculate the norm
-    product_norm = mtu.get_vector_norm(product)
-
-    # normalize the product to get a new iterate v
-    new_v = jax.tree_util.tree_map(lambda w: w/product_norm, product)
-
-    return new_v, product, product_norm
-
-  @jit # TODO: not sure about this! double check
-  def curvature_and_direction_with_start(self, params, x, y, v):
-    """Compute the curvature of the loss with respect to x and y.
-
-    Args:
-      params: a pytree with the parameters of the model
-      x: feature tensor
-      y: label tensor
-      v: a pytree of the same shape as params, to use as a warm start
-
-    Returns:
-      The principal eigenvalue of the Hessian (which could be negative),
-      and the principal eigenvector.
-    """
-
-
-    last_norm = None
-    current_norm = 1.0
-    t = 0
-    while (((last_norm is None)
-            or ((abs(current_norm - last_norm)
-                > current_norm*POWER_ITERATION_EPS)
-                and abs(current_norm) > POWER_ITERATION_EPS))
-          and (t < self.iteration_limit)):
-      last_norm = current_norm
-      v, product, current_norm = iteration(v)
-      t += 1
-
-    leaf_dots_tree = tree_util.tree_map(lambda x, y: jnp.sum(x*y), v, product)
-    leaf_dots = tree_util.tree_leaves(leaf_dots_tree)
-    return jnp.sum(jnp.array(leaf_dots)), v
-  
-  # NEW!!#TODO: JIT THIS!
-
 
 
   eta = step_size
@@ -219,9 +117,17 @@ def train(params,
     eigenvalues: list
     sam_edges: list
     g_alignments: list
+    sam_gradients: list
+    sam_grad_unif_kl: list
+    sgd_gradients: list
+    sgd_gradient_unif_kl: list
     sg_alignments: list
     training_losses: list
   plot_data = PlotData(list(),
+                       list(),
+                       list(),
+                       list(),
+                       list(),
                        list(),
                        list(),
                        list(),
@@ -245,7 +151,7 @@ def train(params,
     if (hessian_check_gap and
         (time.time() > last_hessian_check + 3600.0*hessian_check_gap)):
       original_gradient = grad(loss_by_params)(params, x, y)
-      sam_gradient = get_sam_gradient(params, x, y) if second_order == False else get_second_order_sam_gradient(params, x, y)
+      sam_gradient = get_sam_gradient(params, x, y)
       if num_principal_comps == 1:
         curvature, principal_dir = ce.curvature_and_direction(params, x, y)
         this_hessian_norm = jnp.abs(curvature)
@@ -261,6 +167,10 @@ def train(params,
                                                     principal_dir)
       training_time = time.time() - start_time
       original_gradient_norm = mtu.get_vector_norm(original_gradient)
+      sam_gradient_norm = mtu.get_vector_norm(sam_gradient)
+      num_params = mtu.count_parameters(original_gradient)
+      original_gradient_unif_kl = mtu.get_vector_unif_kl(original_gradient, num_params)
+      sam_gradient_unif_kl = mtu.get_vector_unif_kl(sam_gradient, num_params)
       this_loss = loss_by_params(params, x, y)
 
       if rho == 0.0:
@@ -275,6 +185,9 @@ def train(params,
                            + "2/eta: {}, "
                            + "sam_edge: {}, "
                            + "|| g || = {}, "
+                           + "|| g_sam || = {}, "
+                           + "KL(|g|, Unif) = {}, "
+                           + "KL(|g_sam|, Unif) = {}, "
                            + "loss = {}, "
                            + "g_alignment = {}, "
                            + "sg_alignment = {}")
@@ -282,6 +195,9 @@ def train(params,
                                      2.0/eta,
                                      sam_edge,
                                      original_gradient_norm,
+                                     sam_gradient_norm,
+                                     original_gradient_unif_kl,
+                                     sam_gradient_unif_kl,
                                      this_loss,
                                      grad_hessian_alignment,
                                      samgrad_hessian_alignment, flush=True))
@@ -296,6 +212,10 @@ def train(params,
             plot_data.eigenvalues[i].append(eigs[i])
         plot_data.sam_edges.append(sam_edge)
         plot_data.g_alignments.append(grad_hessian_alignment)
+        plot_data.sam_gradients.append(sam_gradient_norm)
+        plot_data.sgd_gradients.append(original_gradient_norm)
+        plot_data.sam_grad_unif_kl.append(sam_gradient_unif_kl)
+        plot_data.sgd_gradient_unif_kl.append(original_gradient_unif_kl)
         plot_data.sg_alignments.append(samgrad_hessian_alignment)
         plot_data.training_losses.append(this_loss)
       if raw_data_filename:
@@ -397,5 +317,40 @@ def train(params,
       plt.legend()
 
       plt.savefig(loss_curve_filename, format="pdf", dpi=DPI)
+    if sam_grad_norm_output:
+      plt.figure()
+      sam_grads = jnp.max(jnp.array(plot_data.sam_gradients))
+      sgd_grads =  jnp.max(jnp.array(plot_data.sgd_gradients))
+      ylim = sam_grads if sam_grads >= sgd_grads else sgd_grads
+      plt.ylim(0, 1.1*ylim)
+      plt.plot(plot_data.training_times,
+               plot_data.sam_gradients,
+               color="b",
+               label="SAM gradient norm")
+      plt.plot(plot_data.training_times,
+              plot_data.sgd_gradients,
+              color="r",
+              label="SGD gradient norm")
+      plt.legend()
+
+      plt.savefig(sam_grad_norm_output, format="pdf", dpi=DPI)
+
+    if grad_unif_kl_output:
+      plt.figure()
+      sam_kl = jnp.max(jnp.array(plot_data.sam_grad_unif_kl))
+      sgd_kl = jnp.max(jnp.array(plot_data.sgd_gradient_unif_kl))
+      ylim = sam_kl if sam_kl >= sgd_kl else sgd_kl
+      plt.ylim(0, 1.1*ylim)
+      plt.plot(plot_data.training_times,
+               plot_data.sam_grad_unif_kl,
+               color="b",
+               label="$KL(g_sam, Unif)$")
+      plt.plot(plot_data.training_times,
+              plot_data.sgd_gradient_unif_kl,
+              color="r",
+              label="$KL(g, Unif)")
+      plt.legend()
+
+      plt.savefig(sam_grad_norm_output, format="pdf", dpi=DPI)
 
   return params

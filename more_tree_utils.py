@@ -21,12 +21,18 @@ import jax.numpy as jnp
 import hessian_norm as hes
 
 NORMALIZING_EPS = 1e-5
+NORMALIZING_EPS_KL = 1e-9
+
 
 @jit
 def normalize(t):
   norm = get_vector_norm(t)
   return tree_util.tree_map(lambda t_leaf: t_leaf/(norm + NORMALIZING_EPS), t)
 
+@jit
+def normalize_sum(t):
+  norm = get_vector_sum(t)
+  return tree_util.tree_map(lambda t_leaf: t_leaf/(norm + NORMALIZING_EPS), t)
 
 @jit
 def project_out_and_normalize(s, t):
@@ -63,6 +69,32 @@ def get_vector_norm(t):
   squared_norms = tree_util.tree_map(lambda x: jnp.sum(x*x), t)
   return jnp.sqrt(jnp.sum(jnp.array(tree_util.tree_leaves(squared_norms))))
 
+@jit
+def get_vector_sum(t):
+  sums = tree_util.tree_map(lambda x: jnp.sum(x), t)
+  return jnp.sum(jnp.array(tree_util.tree_leaves(sums)))
+
+def get_vector_unif_kl(t, num_params):
+  normed_t = normalize_sum(tree_util.tree_map(lambda x: jnp.abs(x), t))
+  entropies = tree_util.tree_map(lambda x: jnp.sum(x*jnp.log((NORMALIZING_EPS_KL+x)*num_params)), normed_t)
+  return jnp.average(jnp.array(tree_util.tree_leaves(entropies)))
+
+# @jit
+# def get_rank_of_second_moment(t):
+#   # note: wayyyy too slow
+#   second_moment_ranks = tree_util.tree_map(lambda x: jnp.linalg.matrix_rank(jnp.outer(x, x)), t)
+#   return jnp.linalg.matrix_rank(jnp.array(tree_util.tree_leaves(second_moment_ranks)))
+
+# @jit
+# def get_vector_l1_norm(t):
+#   num_greater_than_threshold = tree_util.tree_map(lambda x: jnp.linalg.norm(x, ord=1), t)
+#   return jnp.mean(jnp.array(tree_util.tree_leaves(num_greater_than_threshold)))
+
+@jit
+def get_absolute_component_skew(t, thresh):
+  normed_t = normalize(t)
+  absolute_t = tree_util.tree_map(lambda x: jnp.count_nonzero((jnp.abs(x) >= thresh).astype(int)), normed_t)
+  return jnp.mean(jnp.array(tree_util.tree_leaves(absolute_t)))
 
 def count_parameters(t):
   leaf_parameter_counts = tree_util.tree_map(lambda x: x.size, t)
