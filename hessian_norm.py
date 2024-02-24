@@ -73,6 +73,7 @@ class CurvatureEstimator:
     return hessian_vector_product_wo_self(params, x, y, vector)
   
   def second_moment_vector_product(self, params, x, y, vector):
+    # TODO: Eigenspectra of second moment
     """Compute the product between the Second Moment Matrix and a vector.
 
     Args:
