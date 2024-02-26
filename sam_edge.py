@@ -104,23 +104,18 @@ def train(params,
 
 
 
-
-  @jit
   def second_sam_update(params, x, y, eta, n_iter):
     if rho > 0.0:
-      # TODO: projected gradient ascent
-        # define projection
         _, subkey = jax.random.split(rng)
         betas = mtu.get_random_direction(subkey, params)
         # SSAM objective function
-        def ssam_func(beta, params, x, y):
-           grads = grad(loss_by_params)(params, x, y)
-           return jnp.sum(jnp.array(tree_util.tree_map(lambda b, g: -b*g - (b*g)**2,
+        def ssam_func(beta, params_, x_, y_):
+           grads = grad(loss_by_params)(params_, x_, y_)
+           return jnp.sum(jnp.array(tree_util.tree_leaves(tree_util.tree_map(lambda b, g: jnp.sum(-b*g - (b*g)**2),
                                     beta,
-                                    grads)))
-        proj = jo.projection.projection_l2_ball(x=betas, radius=rho)
-        pga = jo.ProjectedGradient(fun=ssam_func, projection=proj, stepsize=eta, maxiter=n_iter)
-        beta_star, _ = pga.run(data=(x, y), hyperparams_proj=rho)
+                                    grads))))
+        pga = jo.ProjectedGradient(fun=ssam_func, projection=jo.projection.projection_l2_ball, stepsize=eta, maxiter=n_iter)
+        beta_star, _ = pga.run(betas, hyperparams_proj=rho, params_=params, x_=x, y_=y)
         grad_location = tree_util.tree_map(lambda p, b: p + b, 
                                   params, 
                                   beta_star)
@@ -269,7 +264,8 @@ def train(params,
           raw_data_file.write(format_string.format(*columns))
       last_hessian_check = time.time()
 
-    params = update(params, x, y, eta)
+    # params = update(params, x, y, eta)
+      params = second_sam_update(params, x, y, eta, 2)
 
   if (plot_data.sam_edges
       and (not jnp.isnan(jnp.array(plot_data.training_losses)).any())):
@@ -299,10 +295,10 @@ def train(params,
                    plot_data.eigenvalues[i],
                    color=clr,
                    label="$\lambda_{}$".format(i+1))
-      # plt.plot(plot_data.training_times,
-      #          plot_data.sam_edges,
-      #          color="g",
-      #          label="SAM edge")
+      plt.plot(plot_data.training_times,
+               plot_data.sam_edges,
+               color="g",
+               label="SAM edge")
       # plt.axhline(2.0/eta, color="m", label="$2/\eta$")
       plt.legend()
       plt.savefig(eigs_curve_filename, format="pdf", dpi=DPI)
