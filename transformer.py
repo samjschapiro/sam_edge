@@ -85,29 +85,37 @@ parser.add_argument("--rho",
 
 parser.add_argument("--eigs_curve_output",
                     type=str,
-                    default="/tmp/eigs.pdf")
+                    default="figs/eigs.pdf")
 
 parser.add_argument("--eigs_se_only_output",
                     type=str,
-                    default="/tmp/eigs_se_only.pdf",
+                    default="figs/eigs_se_only.pdf",
                     help=("Output for plotting the eigenvalues of "
                           + "the hessian and the SAM-edge only"))
 
 parser.add_argument("--alignment_curve_output",
                     type=str,
-                    default="/tmp/a.pdf")
+                    default="figs/a.pdf")
 
 parser.add_argument("--loss_curve_output",
                     type=str,
-                    default="/tmp/ell.pdf")
+                    default="figs/ell.pdf")
 
 parser.add_argument("--raw_data_output",
                     type=str,
-                    default="/tmp/raw.txt")
+                    default="figs/raw.txt")
 
 parser.add_argument("--num_principal_components",
                     type=int,
                     default=1)
+
+parser.add_argument("--sam_grad_norm_output",
+                    type=str,
+                    default="figs/grad_norm.pdf")
+
+parser.add_argument("--grad_unif_kl_output",
+                    type=str,
+                    default="figs/grad_unif_kl.pdf")
 
 args = parser.parse_args()
 
@@ -202,6 +210,8 @@ params = sam_edge.train(params,
                         args.alignment_curve_output,
                         args.loss_curve_output,
                         args.raw_data_output,
+                        args.sam_grad_norm_output,
+                        args.grad_unif_kl_output,
                         args.num_principal_components,
                         args.time_limit_in_hours,
                         rng)

@@ -254,9 +254,12 @@ def train(params,
                  label="$|| H ||_{op}$")
       else:
         for i in range(num_principal_comps):
+          # colors: b, g, r, c, m, y, k
+          colormap = {0: 'b', 1: 'g', 2: 'r', 3: 'c', 4: 'm', 5:'y', 6:'k'}
+          clr = colormap[i%7]
           plt.plot(plot_data.training_times,
                    plot_data.eigenvalues[i],
-                   color="b",
+                   color=clr,
                    label="$\lambda_{}$".format(i+1))
       plt.plot(plot_data.training_times,
                plot_data.sam_edges,

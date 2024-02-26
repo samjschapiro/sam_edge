@@ -31,7 +31,7 @@ POWER_ITERATION_EPS = 0.001  # relative error
 class CurvatureEstimator:
   """Estimate the curvature of a loss function."""
 
-  def __init__(self, loss, rng, iteration_limit=100):
+  def __init__(self, loss, rng, iteration_limit=15):
     self.loss = loss
     self.loss_grad = grad(loss)
     self.rng = rng
