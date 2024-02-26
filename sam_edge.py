@@ -23,6 +23,7 @@ from jax import grad
 from jax import jit
 from jax import tree_util
 import jax.random as jrandom
+import jaxopt as jo
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
@@ -100,6 +101,22 @@ def train(params,
     return tree_util.tree_map(lambda p, g: p - eta * g,
                               params,
                               grads)
+
+  @jit
+  def second_sam_update(params, x, y, eta, n_iter):
+    if rho > 0.0:
+      # TODO: projected gradient ascent
+        # define projection
+        pga = jo.ProjecedGradient(func, projection, stepsize=eta, maxiter=n_iter)
+    else:
+      grad_location = params
+      grads = grad(loss_by_params)(grad_location, x, y)
+      return tree_util.tree_map(lambda p, g: p - eta * g,
+                                params,
+                                grads)
+
+
+
 
   @jit
   def get_sam_gradient(params, x, y):
@@ -243,7 +260,8 @@ def train(params,
                     max(plot_data.eigenvalues),
                     max(plot_data.sam_edges))
       else:
-        max_y = max(2.0/eta, max(plot_data.sam_edges))
+        # max_y = max(2.0/eta, max(plot_data.sam_edges))
+        max_y = 0
         for i in range(num_principal_comps):
           max_y = max(max_y, max(plot_data.eigenvalues[i]))
       plt.ylim(0, 1.1*max_y)
@@ -261,11 +279,11 @@ def train(params,
                    plot_data.eigenvalues[i],
                    color=clr,
                    label="$\lambda_{}$".format(i+1))
-      plt.plot(plot_data.training_times,
-               plot_data.sam_edges,
-               color="g",
-               label="SAM edge")
-      plt.axhline(2.0/eta, color="m", label="$2/\eta$")
+      # plt.plot(plot_data.training_times,
+      #          plot_data.sam_edges,
+      #          color="g",
+      #          label="SAM edge")
+      # plt.axhline(2.0/eta, color="m", label="$2/\eta$")
       plt.legend()
       plt.savefig(eigs_curve_filename, format="pdf", dpi=DPI)
     if eigs_se_only_filename:
