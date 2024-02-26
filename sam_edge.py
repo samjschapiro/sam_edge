@@ -102,12 +102,32 @@ def train(params,
                               params,
                               grads)
 
+
+
+
   @jit
   def second_sam_update(params, x, y, eta, n_iter):
     if rho > 0.0:
       # TODO: projected gradient ascent
         # define projection
-        pga = jo.ProjecedGradient(func, projection, stepsize=eta, maxiter=n_iter)
+        _, subkey = jax.random.split(rng)
+        betas = mtu.get_random_direction(subkey, params)
+        # SSAM objective function
+        def ssam_func(beta, params, x, y):
+           grads = grad(loss_by_params)(params, x, y)
+           return jnp.sum(jnp.array(tree_util.tree_map(lambda b, g: -b*g - (b*g)**2,
+                                    beta,
+                                    grads)))
+        proj = jo.projection.projection_l2_ball(x=betas, radius=rho)
+        pga = jo.ProjectedGradient(fun=ssam_func, projection=proj, stepsize=eta, maxiter=n_iter)
+        beta_star, _ = pga.run(data=(x, y), hyperparams_proj=rho)
+        grad_location = tree_util.tree_map(lambda p, b: p + b, 
+                                  params, 
+                                  beta_star)
+        grads = grad(loss_by_params)(grad_location, x, y)
+        return tree_util.tree_map(lambda p, g: p - eta * g,
+                          params,
+                          grads)
     else:
       grad_location = params
       grads = grad(loss_by_params)(grad_location, x, y)
