@@ -85,10 +85,10 @@ def get_vector_unif_kl(t, num_params):
 #   second_moment_ranks = tree_util.tree_map(lambda x: jnp.linalg.matrix_rank(jnp.outer(x, x)), t)
 #   return jnp.linalg.matrix_rank(jnp.array(tree_util.tree_leaves(second_moment_ranks)))
 
-# @jit
-# def get_vector_l1_norm(t):
-#   num_greater_than_threshold = tree_util.tree_map(lambda x: jnp.linalg.norm(x, ord=1), t)
-#   return jnp.mean(jnp.array(tree_util.tree_leaves(num_greater_than_threshold)))
+@jit
+def get_vector_l1_norm(t):
+  num_greater_than_threshold = tree_util.tree_map(lambda x: jnp.linalg.norm(x, ord=1), t)
+  return jnp.sum(jnp.array(tree_util.tree_leaves(num_greater_than_threshold)))
 
 @jit
 def get_absolute_component_skew(t, thresh):

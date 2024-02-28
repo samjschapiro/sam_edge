@@ -81,6 +81,10 @@ def train(params,
   def loss_by_params(params, x_batched, y_batched):
     preds = model.apply(params, x_batched)
     return jnp.mean(loss(x_batched, preds, y_batched))
+  
+  @jit
+  def functional_loss(params, x_batched, y_batched):
+    return model.apply(params, x_batched, y_batched)
 
   @jit
   def sam_neighbor(params, x, y):
@@ -111,9 +115,11 @@ def train(params,
         # SSAM objective function
         def ssam_func(beta, params_, x_, y_):
            grads = grad(loss_by_params)(params_, x_, y_)
-           return jnp.sum(jnp.array(tree_util.tree_leaves(tree_util.tree_map(lambda b, g: jnp.sum(-b*g - (b*g)**2),
+           func_grads = grad(functional_loss)(params_, x_, y_)
+           return jnp.sum(jnp.array(tree_util.tree_leaves(tree_util.tree_map(lambda b, g, f: jnp.sum(- f*b*g - (b*g)**2), # MSE loss, so l_i'' is 1
                                     beta,
-                                    grads))))
+                                    grads,
+                                    func_grads))))
         pga = jo.ProjectedGradient(fun=ssam_func, projection=jo.projection.projection_l2_ball, stepsize=eta, maxiter=n_iter)
         beta_star, _ = pga.run(betas, hyperparams_proj=rho, params_=params, x_=x, y_=y)
         grad_location = tree_util.tree_map(lambda p, b: p + b, 
@@ -122,16 +128,13 @@ def train(params,
         grads = grad(loss_by_params)(grad_location, x, y)
         return tree_util.tree_map(lambda p, g: p - eta * g,
                           params,
-                          grads)
+                          grads), grads
     else:
       grad_location = params
       grads = grad(loss_by_params)(grad_location, x, y)
       return tree_util.tree_map(lambda p, g: p - eta * g,
                                 params,
-                                grads)
-
-
-
+                                grads), grads
 
   @jit
   def get_sam_gradient(params, x, y):
@@ -193,16 +196,18 @@ def train(params,
                                                          num_principal_comps)
         print("done calculating principal components", flush=True)
         this_hessian_norm = eigs[0]
+      # params, sam_gradient = second_sam_update(params, x, y, eta, 10)
       grad_hessian_alignment = mtu.get_alignment(original_gradient,
                                                  principal_dir)
       samgrad_hessian_alignment = mtu.get_alignment(sam_gradient,
                                                     principal_dir)
+
       training_time = time.time() - start_time
       original_gradient_norm = mtu.get_vector_norm(original_gradient)
       sam_gradient_norm = mtu.get_vector_norm(sam_gradient)
-      num_params = mtu.count_parameters(original_gradient)
-      original_gradient_unif_kl = mtu.get_vector_unif_kl(original_gradient, num_params)
-      sam_gradient_unif_kl = mtu.get_vector_unif_kl(sam_gradient, num_params)
+      # num_params = mtu.count_parameters(original_gradient)
+      original_gradient_l1_norm = mtu.get_vector_l1_norm(original_gradient)
+      sam_gradient_l1_norm = mtu.get_vector_l1_norm(sam_gradient)
       this_loss = loss_by_params(params, x, y)
 
       if rho == 0.0:
@@ -213,24 +218,24 @@ def train(params,
                                 + 8.0*rho/(eta*original_gradient_norm))
                       - 1.0))
       print("--------------", flush=True)
-      formatting_string = ("Norm: {}, "
+      formatting_string = ("Loss = {}, "
+                           + "lambda1: {}, "
                            + "2/eta: {}, "
                            + "sam_edge: {}, "
-                           + "|| g || = {}, "
-                           + "|| g_sam || = {}, "
-                           + "KL(|g|, Unif) = {}, "
-                           + "KL(|g_sam|, Unif) = {}, "
-                           + "loss = {}, "
+                           + "|| g ||_2 = {}, "
+                           + "|| g_sam ||_2 = {}, "
+                           + "|| g ||_1 = {}, "
+                           + "|| g_sam||_1 = {}, "
                            + "g_alignment = {}, "
                            + "sg_alignment = {}")
-      print(formatting_string.format(this_hessian_norm,
+      print(formatting_string.format(this_loss,
+                                    this_hessian_norm,
                                      2.0/eta,
                                      sam_edge,
                                      original_gradient_norm,
                                      sam_gradient_norm,
-                                     original_gradient_unif_kl,
-                                     sam_gradient_unif_kl,
-                                     this_loss,
+                                     original_gradient_l1_norm,
+                                     sam_gradient_l1_norm,
                                      grad_hessian_alignment,
                                      samgrad_hessian_alignment, flush=True))
       if num_principal_comps > 1:
@@ -244,28 +249,31 @@ def train(params,
             plot_data.eigenvalues[i].append(eigs[i])
         plot_data.sam_edges.append(sam_edge)
         plot_data.g_alignments.append(grad_hessian_alignment)
-        plot_data.sam_gradients.append(sam_gradient_norm)
         plot_data.sgd_gradients.append(original_gradient_norm)
-        plot_data.sam_grad_unif_kl.append(sam_gradient_unif_kl)
-        plot_data.sgd_gradient_unif_kl.append(original_gradient_unif_kl)
+        plot_data.sam_gradients.append(sam_gradient_norm)
+        plot_data.sam_grad_unif_kl.append(sam_gradient_l1_norm)
+        plot_data.sgd_gradient_unif_kl.append(original_gradient_l1_norm)
         plot_data.sg_alignments.append(samgrad_hessian_alignment)
         plot_data.training_losses.append(this_loss)
       if raw_data_filename:
         with open(raw_data_filename, "a") as raw_data_file:
-          columns = [training_time,
-                     this_hessian_norm,
-                     2.0/eta,
-                     sam_edge,
-                     original_gradient_norm,
-                     this_loss,
-                     grad_hessian_alignment,
-                     samgrad_hessian_alignment]
+          columns = [this_loss,
+                    this_hessian_norm,
+                      2.0/eta,
+                      sam_edge,
+                      original_gradient_norm,
+                      sam_gradient_norm,
+                      original_gradient_l1_norm,
+                      sam_gradient_l1_norm,
+                      grad_hessian_alignment,
+                      samgrad_hessian_alignment]
           format_string = "{} "*(len(columns)-1) + "{}\n"
           raw_data_file.write(format_string.format(*columns))
       last_hessian_check = time.time()
 
-    # params = update(params, x, y, eta)
-      params = second_sam_update(params, x, y, eta, 2)
+    params = update(params, x, y, eta)
+
+      
 
   if (plot_data.sam_edges
       and (not jnp.isnan(jnp.array(plot_data.training_losses)).any())):
@@ -276,7 +284,7 @@ def train(params,
                     max(plot_data.eigenvalues),
                     max(plot_data.sam_edges))
       else:
-        # max_y = max(2.0/eta, max(plot_data.sam_edges))
+        max_y = max(2.0/eta, max(plot_data.sam_edges))
         max_y = 0
         for i in range(num_principal_comps):
           max_y = max(max_y, max(plot_data.eigenvalues[i]))
@@ -299,7 +307,7 @@ def train(params,
                plot_data.sam_edges,
                color="g",
                label="SAM edge")
-      # plt.axhline(2.0/eta, color="m", label="$2/\eta$")
+      plt.axhline(2.0/eta, color="m", label="$2/\eta$")
       plt.legend()
       plt.savefig(eigs_curve_filename, format="pdf", dpi=DPI)
     if eigs_se_only_filename:
@@ -381,11 +389,11 @@ def train(params,
       plt.plot(plot_data.training_times,
                plot_data.sam_grad_unif_kl,
                color="b",
-               label="$KL(g_{sam}, Unif)$")
+               label="$\|g_{sam}\|_1$")
       plt.plot(plot_data.training_times,
               plot_data.sgd_gradient_unif_kl,
               color="r",
-              label="$KL(g, Unif)$")
+              label="$\|g\|_1$")
       plt.legend()
 
       plt.savefig(grad_unif_kl_output, format="pdf", dpi=DPI)
