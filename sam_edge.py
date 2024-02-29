@@ -105,51 +105,51 @@ def train(params,
                               params,
                               grads)
   
+  @jit
+  def get_ssam_gradient(params, x, y, n_iter, beta_start):
+    betas = beta_start
+    # SSAM objective function
+    def ssam_func(beta, params_, x_, y_):
+        grads = grad(loss_by_params)(params_, x_, y_)
+        func_grads = grad(apply_model2)(params_, x_, y_)
+        return jnp.sum(jnp.array(tree_util.tree_leaves(tree_util.tree_map(lambda b, nabla_l, nabla_f: jnp.sum(-b*nabla_l - (b*nabla_f)**2), # MSE loss, so l_i'' is 1 #
+                                beta,
+                                grads,
+                                func_grads))))
+    pga = jo.ProjectedGradient(fun=ssam_func, projection=jo.projection.projection_l2_ball, stepsize=rho/2, maxiter=n_iter)
+    beta_star, _ = pga.run(betas, hyperparams_proj=rho, params_=params, x_=x, y_=y)
+    grad_location = tree_util.tree_map(lambda p, b: p + b, 
+                              params, 
+                              beta_star)
+    grads = grad(loss_by_params)(grad_location, x, y)
+    return grads 
 
   @jit
-  def update(params, x, y, eta):
+  def ssam_neighbor(params, x, y, n_iter, beta_start):
+    grads = get_ssam_gradient(params, x, y, n_iter, beta_start)
+    return tree_util.tree_map(lambda p, g: p - eta * g,
+                      params,
+                      grads)
+
+  @jit
+  def update(params, x, y, eta, n_iter=5, second_order=False):
     if rho > 0.0:
-      grad_location = sam_neighbor(params, x, y) 
+      if not second_order:
+        grad_location = sam_neighbor(params, x, y) 
+      else:
+        beta_start = sam_neighbor(params, x, y)
+        grad_location = ssam_neighbor(params, x, y, n_iter, beta_start)
     else:
       grad_location = params
     grads = grad(loss_by_params)(grad_location, x, y)
     return tree_util.tree_map(lambda p, g: p - eta * g,
                               params,
                               grads)
-  
-  def second_sam_update(params, x, y, n_iter, beta_start):
-    if rho > 0.0:
-        betas = beta_start
-        # SSAM objective function
-        def ssam_func(beta, params_, x_, y_):
-           grads = grad(loss_by_params)(params_, x_, y_)
-           func_grads = grad(apply_model2)(params_, x_, y_)
-           return jnp.sum(jnp.array(tree_util.tree_leaves(tree_util.tree_map(lambda b, nabla_l, nabla_f: jnp.sum(-b*nabla_l - (b*nabla_f)**2), # MSE loss, so l_i'' is 1 #
-                                    beta,
-                                    grads,
-                                    func_grads))))
-        pga = jo.ProjectedGradient(fun=ssam_func, projection=jo.projection.projection_l2_ball, stepsize=rho, maxiter=n_iter)
-        beta_star, _ = pga.run(betas, hyperparams_proj=rho, params_=params, x_=x, y_=y)
-        grad_location = tree_util.tree_map(lambda p, b: p + b, 
-                                  params, 
-                                  beta_star)
-        grads = grad(loss_by_params)(grad_location, x, y)
-        return tree_util.tree_map(lambda p, g: p - eta * g,
-                          params,
-                          grads), grads
-    else:
-      grad_location = params
-      grads = grad(loss_by_params)(grad_location, x, y)
-      return tree_util.tree_map(lambda p, g: p - eta * g,
-                                params,
-                                grads), grads
 
   @jit
   def get_sam_gradient(params, x, y):
     grad_location = sam_neighbor(params, x, y)
     return grad(loss_by_params)(grad_location, x, y)
-
-
 
   eta = step_size
 
@@ -204,25 +204,25 @@ def train(params,
                                                          num_principal_comps)
         print("done calculating principal components", flush=True)
         this_hessian_norm = eigs[0]
+      this_loss = loss_by_params(params, x, y)
       if second_order:
-        params, ssam_gradient = second_sam_update(params, x, y, n_iter=1e4, beta_start=sam_gradient)
+        ssam_gradient = get_ssam_gradient(params, x, y, n_iter=5, beta_start=sam_gradient)
         ssamgrad_hessian_alignment = mtu.get_alignment(ssam_gradient,
                                               principal_dir)
         ssam_gradient_norm = mtu.get_vector_norm(ssam_gradient)
         ssam_gradient_l1_norm = mtu.get_vector_l1_norm(ssam_gradient)
+        ssam_sam_grads_alignment = mtu.get_alignment(sam_gradient, ssam_gradient)   
 
       grad_hessian_alignment = mtu.get_alignment(original_gradient,
                                                  principal_dir)
       samgrad_hessian_alignment = mtu.get_alignment(sam_gradient,
                                                     principal_dir)
-      ssam_sam_grads_alignment = mtu.get_alignment(sam_gradient, ssam_gradient)
 
       training_time = time.time() - start_time
       original_gradient_norm = mtu.get_vector_norm(original_gradient)
       sam_gradient_norm = mtu.get_vector_norm(sam_gradient)
       original_gradient_l1_norm = mtu.get_vector_l1_norm(original_gradient)
       sam_gradient_l1_norm = mtu.get_vector_l1_norm(sam_gradient)
-      this_loss = loss_by_params(params, x, y)
 
       if rho == 0.0:
         sam_edge = 2.0/eta
@@ -334,8 +334,7 @@ def train(params,
             raw_data_file.write(format_string.format(*columns))
       last_hessian_check = time.time()
 
-  if not second_order:  
-    params = update(params, x, y, eta)
+    params = update(params, x, y, eta, n_iter=5, second_order=second_order)
 
       
 
