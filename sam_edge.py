@@ -88,9 +88,9 @@ def train(params,
   def abs_loss(logits, y):
     return jnp.abs(logits - y)
   
-  @jit
-  def apply_model(params, x_batched):
-    return 0.1+jnp.sum(jnp.argmax(model.apply(params, x_batched), axis=1))-0.1
+  # @jit
+  # def apply_model(params, x_batched):
+  #   return 0.1+jnp.sum(jnp.argmax(model.apply(params, x_batched), axis=1))-0.1
 
 
   def apply_model2(params, x_batched, y_batched):
@@ -124,7 +124,7 @@ def train(params,
         def ssam_func(beta, params_, x_, y_):
            grads = grad(loss_by_params)(params_, x_, y_)
            func_grads = grad(apply_model2)(params_, x_, y_)
-           return jnp.sum(jnp.array(tree_util.tree_leaves(tree_util.tree_map(lambda b, g, f: jnp.sum(-b*g - (b*f)**2), # MSE loss, so l_i'' is 1
+           return jnp.sum(jnp.array(tree_util.tree_leaves(tree_util.tree_map(lambda b, nabla_l, nabla_f: jnp.sum(-b*nabla_l - (b*nabla_f)**2), # MSE loss, so l_i'' is 1 #
                                     beta,
                                     grads,
                                     func_grads))))
@@ -205,7 +205,7 @@ def train(params,
         print("done calculating principal components", flush=True)
         this_hessian_norm = eigs[0]
       if second_order:
-        _, ssam_gradient = second_sam_update(params, x, y, n_iter=15, beta_start=sam_gradient)
+        params, ssam_gradient = second_sam_update(params, x, y, n_iter=1e4, beta_start=sam_gradient)
         ssamgrad_hessian_alignment = mtu.get_alignment(ssam_gradient,
                                               principal_dir)
         ssam_gradient_norm = mtu.get_vector_norm(ssam_gradient)
@@ -215,7 +215,7 @@ def train(params,
                                                  principal_dir)
       samgrad_hessian_alignment = mtu.get_alignment(sam_gradient,
                                                     principal_dir)
-     
+      ssam_sam_grads_alignment = mtu.get_alignment(sam_gradient, ssam_gradient)
 
       training_time = time.time() - start_time
       original_gradient_norm = mtu.get_vector_norm(original_gradient)
@@ -245,7 +245,8 @@ def train(params,
                       + "|| g_ssam||_1 = {}, "
                       + "g_alignment = {}, "
                       + "sg_alignment = {}, "
-                      + "ssg_alignment = {}")
+                      + "ssg_alignment = {}, "
+                      + "ssam_sam_g_alignment = {}")
         print(formatting_string.format(this_loss,
                                       this_hessian_norm,
                                       2.0/eta,
@@ -258,7 +259,8 @@ def train(params,
                                       ssam_gradient_l1_norm,
                                       grad_hessian_alignment,
                                       samgrad_hessian_alignment, 
-                                      ssamgrad_hessian_alignment, 
+                                      ssamgrad_hessian_alignment,
+                                      ssam_sam_grads_alignment, 
                                       flush=True))
       else:
         formatting_string = ("Loss = {}, "
@@ -313,7 +315,8 @@ def train(params,
                       ssam_gradient_l1_norm,
                       grad_hessian_alignment,
                       samgrad_hessian_alignment,
-                      ssamgrad_hessian_alignment]
+                      ssamgrad_hessian_alignment,
+                      ssam_sam_grads_alignment]
             format_string = "{} "*(len(columns)-1) + "{}\n"
             raw_data_file.write(format_string.format(*columns))
           else:
