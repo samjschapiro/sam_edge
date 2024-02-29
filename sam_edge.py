@@ -132,13 +132,10 @@ def train(params,
                       grads)
 
   @jit
-  def update(params, x, y, eta, n_iter=5, second_order=False):
+  def update(params, x, y, eta, n_iter=5):
     if rho > 0.0:
-      if not second_order:
-        grad_location = sam_neighbor(params, x, y) 
-      else:
-        beta_start = sam_neighbor(params, x, y)
-        grad_location = ssam_neighbor(params, x, y, n_iter, beta_start)
+      grad_location = sam_neighbor(params, x, y) 
+      grad_location = ssam_neighbor(params, x, y, n_iter, grad_location) # Run projected gradient ascent to get SSAM neightbor
     else:
       grad_location = params
     grads = grad(loss_by_params)(grad_location, x, y)
@@ -334,7 +331,7 @@ def train(params,
             raw_data_file.write(format_string.format(*columns))
       last_hessian_check = time.time()
 
-    params = update(params, x, y, eta, n_iter=5, second_order=second_order)
+    params = update(params, x, y, eta, n_iter=int(second_order)*5)
 
       
 
