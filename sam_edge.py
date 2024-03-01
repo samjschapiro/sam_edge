@@ -183,6 +183,7 @@ def train(params,
   last_hessian_check = start_time
   time_limit = 3600*time_limit_in_hours
   this_loss = None
+  it_num = 0
   for x, y in train_batches:
     if ((time.time() > start_time + time_limit)
         or (this_loss and jnp.isnan(this_loss))):
@@ -192,6 +193,10 @@ def train(params,
         (time.time() > last_hessian_check + 3600.0*hessian_check_gap)):
       original_gradient = grad(loss_by_params)(params, x, y)
       sam_gradient = get_sam_gradient(params, x, y)
+      if it_num == 0:
+        prev_original_gradient = original_gradient
+        prev_sam_gradient = sam_gradient
+      it_num += 1
       if num_principal_comps == 1:
         curvature, principal_dir = ce.curvature_and_direction(params, x, y)
         this_hessian_norm = jnp.abs(curvature)
@@ -214,7 +219,10 @@ def train(params,
                                                  principal_dir)
       samgrad_hessian_alignment = mtu.get_alignment(sam_gradient,
                                                     principal_dir)
-
+      sam_succ_grad_alignment = mtu.get_alignment(sam_gradient, prev_sam_gradient)
+      succ_grad_alignment = mtu.get_alignment(original_gradient, prev_original_gradient)
+      prev_sam_gradient = sam_gradient
+      prev_original_gradient = original_gradient
       training_time = time.time() - start_time
       original_gradient_norm = mtu.get_vector_norm(original_gradient)
       sam_gradient_norm = mtu.get_vector_norm(sam_gradient)
@@ -269,7 +277,9 @@ def train(params,
                             + "|| g ||_1 = {}, "
                             + "|| g_sam||_1 = {}, "
                             + "g_alignment = {}, "
-                            + "sg_alignment = {}")
+                            + "sg_alignment = {},"
+                            + "succ_g_alignment = {},"
+                            + "succ_sg_alignment = {}")
         print(formatting_string.format(this_loss,
                                       this_hessian_norm,
                                       2.0/eta,
@@ -279,7 +289,10 @@ def train(params,
                                       original_gradient_l1_norm,
                                       sam_gradient_l1_norm,
                                       grad_hessian_alignment,
-                                      samgrad_hessian_alignment, flush=True))
+                                      samgrad_hessian_alignment, 
+                                      succ_grad_alignment,
+                                      sam_succ_grad_alignment,
+                                      flush=True))
       if num_principal_comps > 1:
         print("eigs = {}".format(eigs, flush=True))
       # if eigs_curve_filename or eigs_se_only_filename:
@@ -326,12 +339,15 @@ def train(params,
                         original_gradient_l1_norm,
                         sam_gradient_l1_norm,
                         grad_hessian_alignment,
-                        samgrad_hessian_alignment]
+                        samgrad_hessian_alignment,
+                        succ_grad_alignment,
+                        sam_succ_grad_alignment]
             format_string = "{} "*(len(columns)-1) + "{}\n"
             raw_data_file.write(format_string.format(*columns))
       last_hessian_check = time.time()
 
-    params = update(params, x, y, eta, n_iter=int(second_order)*5)
+    n_iter_ = int(second_order)*5
+    params = update(params, x, y, eta, n_iter=n_iter_)
 
       
 
