@@ -36,10 +36,12 @@ parser.add_argument("--time_limit_in_hours",
                     default=4.0)
 
 parser.add_argument("--hessian_check_gap",
-                    type=float,
-                    default=0.25,
-                    help=("If not None, the number of seconds "
-                          + "between hessian-norm measurements"))
+                    type=int,
+                    default=25)
+
+parser.add_argument("--epochs",
+                    type=int,
+                    default=200)
 
 parser.add_argument("--step_size",
                     type=float,
@@ -130,6 +132,10 @@ parser.add_argument("--grad_unif_kl_output",
 parser.add_argument("--num_principal_components",
                     type=int,
                     default=1)
+
+parser.add_argument("--second_order",
+                    type=bool,
+                    default=True)
 
 args = parser.parse_args()
 
@@ -305,7 +311,9 @@ test_batches = ((x - mu, y) for (x, y) in test_batches)
 
 params = sam_edge.train(params,
                         model,
+                        args.second_order,
                         loss,
+                        args.epochs,
                         train_batches,
                         args.step_size,
                         args.rho,

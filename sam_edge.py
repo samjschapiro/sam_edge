@@ -33,14 +33,15 @@ import more_tree_utils as mtu
 
 EPSILON = 1e-5
 DPI = 300
-second_order = True
 
 # pylint: disable=anomalous-backslash-in-string
 
 
 def train(params,
           model,
+          second_order,
           loss,
+          epochs,
           train_batches,
           step_size,
           rho,  # for SAM -- if rho is 0.0, SAM is not used
@@ -131,11 +132,22 @@ def train(params,
                       params,
                       grads)
 
+
   @jit
-  def update(params, x, y, eta, n_iter=5):
+  def update(params, x, y, eta):
     if rho > 0.0:
       grad_location = sam_neighbor(params, x, y) 
-      grad_location = ssam_neighbor(params, x, y, n_iter, grad_location) # Run projected gradient ascent to get SSAM neightbor
+    else:
+      grad_location = params
+    grads = grad(loss_by_params)(grad_location, x, y)
+    return tree_util.tree_map(lambda p, g: p - eta * g,
+                              params,
+                              grads)
+  @jit
+  def ssam_update(params, x, y, eta, n_iter=5):
+    if rho > 0.0:
+      beta_start = sam_neighbor(params, x, y)
+      grad_location = ssam_neighbor(params, x, y, n_iter, beta_start) # Run projected gradient ascent to get SSAM neightbor
     else:
       grad_location = params
     grads = grad(loss_by_params)(grad_location, x, y)
@@ -179,24 +191,23 @@ def train(params,
   ce = hessian_norm.CurvatureEstimator(loss_by_params, rng)
 
   print("starting training", flush=True)
-  start_time = time.time()
-  last_hessian_check = start_time
-  time_limit = 3600*time_limit_in_hours
+  # start_time = time.time()
+  # last_hessian_check = start_time
+  # time_limit = 3600*time_limit_in_hours
   this_loss = None
   it_num = 0
   for x, y in train_batches:
-    if ((time.time() > start_time + time_limit)
-        or (this_loss and jnp.isnan(this_loss))):
+    # if ((time.time() > start_time + time_limit)
+    #     or (this_loss and jnp.isnan(this_loss))):
+    #   break
+    if it_num == epochs:
       break
-
-    if (hessian_check_gap and
-        (time.time() > last_hessian_check + 3600.0*hessian_check_gap)):
+    if it_num % hessian_check_gap == 0:
       original_gradient = grad(loss_by_params)(params, x, y)
       sam_gradient = get_sam_gradient(params, x, y)
       if it_num == 0:
         prev_original_gradient = original_gradient
         prev_sam_gradient = sam_gradient
-      it_num += 1
       if num_principal_comps == 1:
         curvature, principal_dir = ce.curvature_and_direction(params, x, y)
         this_hessian_norm = jnp.abs(curvature)
@@ -223,7 +234,6 @@ def train(params,
       succ_grad_alignment = mtu.get_alignment(original_gradient, prev_original_gradient)
       prev_sam_gradient = sam_gradient
       prev_original_gradient = original_gradient
-      training_time = time.time() - start_time
       original_gradient_norm = mtu.get_vector_norm(original_gradient)
       sam_gradient_norm = mtu.get_vector_norm(sam_gradient)
       original_gradient_l1_norm = mtu.get_vector_l1_norm(original_gradient)
@@ -238,7 +248,8 @@ def train(params,
                       - 1.0))
       print("--------------", flush=True)
       if second_order:
-        formatting_string = ("Loss = {}, "
+        formatting_string = ("Epoch = {}, "
+                      + "Loss = {}, "
                       + "lambda1: {}, "
                       + "2/eta: {}, "
                       + "sam_edge: {}, "
@@ -252,7 +263,8 @@ def train(params,
                       + "sg_alignment = {}, "
                       + "ssg_alignment = {}, "
                       + "ssam_sam_g_alignment = {}")
-        print(formatting_string.format(this_loss,
+        print(formatting_string.format(it_num,
+                                      this_loss,
                                       this_hessian_norm,
                                       2.0/eta,
                                       sam_edge,
@@ -268,7 +280,8 @@ def train(params,
                                       ssam_sam_grads_alignment, 
                                       flush=True))
       else:
-        formatting_string = ("Loss = {}, "
+        formatting_string = ("Epoch = {}, "
+                            + "Loss = {}, "
                             + "lambda1: {}, "
                             + "2/eta: {}, "
                             + "sam_edge: {}, "
@@ -280,7 +293,8 @@ def train(params,
                             + "sg_alignment = {},"
                             + "succ_g_alignment = {},"
                             + "succ_sg_alignment = {}")
-        print(formatting_string.format(this_loss,
+        print(formatting_string.format(it_num,
+                                      this_loss,
                                       this_hessian_norm,
                                       2.0/eta,
                                       sam_edge,
@@ -313,7 +327,8 @@ def train(params,
       if raw_data_filename:
         with open(raw_data_filename, "a") as raw_data_file:
           if second_order: 
-            columns = [this_loss,
+            columns = [it_num,
+                      this_loss,
                       this_hessian_norm,
                       2.0/eta,
                       sam_edge,
@@ -330,7 +345,8 @@ def train(params,
             format_string = "{} "*(len(columns)-1) + "{}\n"
             raw_data_file.write(format_string.format(*columns))
           else:
-            columns = [this_loss,
+            columns = [it_num,
+                      this_loss,
                       this_hessian_norm,
                         2.0/eta,
                         sam_edge,
@@ -344,10 +360,13 @@ def train(params,
                         sam_succ_grad_alignment]
             format_string = "{} "*(len(columns)-1) + "{}\n"
             raw_data_file.write(format_string.format(*columns))
-      last_hessian_check = time.time()
 
+    it_num += 1
     n_iter_ = int(second_order)*5
-    params = update(params, x, y, eta, n_iter=n_iter_)
+    if second_order:
+      params = ssam_update(params, x, y, eta, n_iter=n_iter_)
+    else:
+      params = update(params, x, y, eta)
 
       
 
