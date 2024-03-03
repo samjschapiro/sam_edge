@@ -80,7 +80,7 @@ def train(params,
   Returns:
     final parameters
   """
-
+  second_order = False
   @jit
   def loss_by_params(params, x_batched, y_batched):
     preds = model.apply(params, x_batched)
@@ -191,15 +191,9 @@ def train(params,
   ce = hessian_norm.CurvatureEstimator(loss_by_params, rng)
 
   print("starting training", flush=True)
-  # start_time = time.time()
-  # last_hessian_check = start_time
-  # time_limit = 3600*time_limit_in_hours
   this_loss = None
   it_num = 0
   for x, y in train_batches:
-    # if ((time.time() > start_time + time_limit)
-    #     or (this_loss and jnp.isnan(this_loss))):
-    #   break
     if it_num == epochs:
       break
     if it_num % hessian_check_gap == 0:
@@ -309,21 +303,6 @@ def train(params,
                                       flush=True))
       if num_principal_comps > 1:
         print("eigs = {}".format(eigs, flush=True))
-      # if eigs_curve_filename or eigs_se_only_filename:
-      #   plot_data.training_times.append(training_time)
-      #   if num_principal_comps == 1:
-      #     plot_data.eigenvalues.append(this_hessian_norm)
-      #   else:
-      #     for i in range(num_principal_comps):
-      #       plot_data.eigenvalues[i].append(eigs[i])
-      #   plot_data.sam_edges.append(sam_edge)
-      #   plot_data.g_alignments.append(grad_hessian_alignment)
-      #   plot_data.sgd_gradients.append(original_gradient_norm)
-      #   plot_data.sam_gradients.append(sam_gradient_norm)
-      #   plot_data.sam_grad_unif_kl.append(sam_gradient_l1_norm)
-      #   plot_data.sgd_gradient_unif_kl.append(original_gradient_l1_norm)
-      #   plot_data.sg_alignments.append(samgrad_hessian_alignment)
-      #   plot_data.training_losses.append(this_loss)
       if raw_data_filename:
         with open(raw_data_filename, "a") as raw_data_file:
           if second_order: 
@@ -362,135 +341,12 @@ def train(params,
             raw_data_file.write(format_string.format(*columns))
 
     it_num += 1
-    n_iter_ = int(second_order)*5
+    n_iter_ = 15
     if second_order:
       params = ssam_update(params, x, y, eta, n_iter=n_iter_)
     else:
       params = update(params, x, y, eta)
 
-      
-
-  # if (plot_data.sam_edges
-  #     and (not jnp.isnan(jnp.array(plot_data.training_losses)).any())):
-  #   if eigs_curve_filename:
-  #     plt.figure()
-  #     if num_principal_comps == 1:
-  #       max_y = max(2.0/eta,
-  #                   max(plot_data.eigenvalues),
-  #                   max(plot_data.sam_edges))
-  #     else:
-  #       max_y = max(2.0/eta, max(plot_data.sam_edges))
-  #       max_y = 0
-  #       for i in range(num_principal_comps):
-  #         max_y = max(max_y, max(plot_data.eigenvalues[i]))
-  #     plt.ylim(0, 1.1*max_y)
-  #     if num_principal_comps == 1:
-  #       plt.plot(plot_data.training_times,
-  #                plot_data.eigenvalues,
-  #                color="b",
-  #                label="$|| H ||_{op}$")
-  #     else:
-  #       for i in range(num_principal_comps):
-  #         # colors: b, g, r, c, m, y, k
-  #         colormap = {0: 'b', 1: 'g', 2: 'r', 3: 'c', 4: 'm', 5:'y', 6:'k'}
-  #         clr = colormap[i%7]
-  #         plt.plot(plot_data.training_times,
-  #                  plot_data.eigenvalues[i],
-  #                  color=clr,
-  #                  label="$\lambda_{}$".format(i+1))
-  #     plt.plot(plot_data.training_times,
-  #              plot_data.sam_edges,
-  #              color="g",
-  #              label="SAM edge")
-  #     plt.axhline(2.0/eta, color="m", label="$2/\eta$")
-  #     plt.legend()
-  #     plt.savefig(eigs_curve_filename, format="pdf", dpi=DPI)
-  #   if eigs_se_only_filename:
-  #     plt.figure()
-  #     if num_principal_comps == 1:
-  #       max_y = max(max(plot_data.eigenvalues), max(plot_data.sam_edges))
-  #     else:
-  #       max_y = max(plot_data.sam_edges)
-  #       for i in range(num_principal_comps):
-  #         max_y = max(max_y, max(plot_data.eigenvalues[i]))
-  #     plt.ylim(0, 1.1*max_y)
-  #     if num_principal_comps == 1:
-  #       plt.plot(plot_data.training_times,
-  #                plot_data.eigenvalues,
-  #                color="b",
-  #                label="$|| H ||_{op}$")
-  #     else:
-  #       for i in range(num_principal_comps):
-  #         plt.plot(plot_data.training_times,
-  #                  plot_data.eigenvalues[i],
-  #                  color="b",
-  #                  label="$\lambda_{}$".format(i+1))
-  #     plt.plot(plot_data.training_times,
-  #              plot_data.sam_edges,
-  #              color="g",
-  #              label="SAM edge")
-  #     plt.legend()
-
-  #     plt.savefig(eigs_se_only_filename, format="pdf", dpi=DPI)
-  #   if alignment_curve_filename:
-  #     plt.figure()
-  #     plt.ylim(0, 1.1*max(jnp.max(jnp.array(plot_data.g_alignments)),
-  #                         jnp.max(jnp.array(plot_data.sg_alignments))))
-  #     plt.plot(plot_data.training_times,
-  #              plot_data.g_alignments,
-  #              color="b",
-  #              label="original gradient alignments")
-  #     plt.plot(plot_data.training_times,
-  #              plot_data.sg_alignments,
-  #              color="g",
-  #              label="SAM gradient alignments")
-  #     plt.legend()
-
-  #     plt.savefig(alignment_curve_filename, format="pdf", dpi=DPI)
-  #   if loss_curve_filename:
-  #     plt.figure()
-  #     plt.ylim(0, 1.1*jnp.max(jnp.array(plot_data.training_losses)))
-  #     plt.plot(plot_data.training_times,
-  #              plot_data.training_losses,
-  #              color="b",
-  #              label="training loss")
-  #     plt.legend()
-
-  #     plt.savefig(loss_curve_filename, format="pdf", dpi=DPI)
-  #   if sam_grad_norm_output:
-  #     plt.figure()
-  #     sam_grads = jnp.max(jnp.array(plot_data.sam_gradients))
-  #     sgd_grads =  jnp.max(jnp.array(plot_data.sgd_gradients))
-  #     ylim = sam_grads if sam_grads >= sgd_grads else sgd_grads
-  #     plt.ylim(0, 1.1*ylim)
-  #     plt.plot(plot_data.training_times,
-  #              plot_data.sam_gradients,
-  #              color="b",
-  #              label="$\| g_{sam} \|$")
-  #     plt.plot(plot_data.training_times,
-  #             plot_data.sgd_gradients,
-  #             color="r",
-  #             label="$\| g \|$")
-  #     plt.legend()
-
-  #     plt.savefig(sam_grad_norm_output, format="pdf", dpi=DPI)
-
-  #   if grad_unif_kl_output:
-  #     plt.figure()
-  #     sam_kl = jnp.max(jnp.array(plot_data.sam_grad_unif_kl))
-  #     sgd_kl = jnp.max(jnp.array(plot_data.sgd_gradient_unif_kl))
-  #     ylim = sam_kl if sam_kl >= sgd_kl else sgd_kl
-  #     plt.ylim(0, 1.1*ylim)
-  #     plt.plot(plot_data.training_times,
-  #              plot_data.sam_grad_unif_kl,
-  #              color="b",
-  #              label="$\|g_{sam}\|_1$")
-  #     plt.plot(plot_data.training_times,
-  #             plot_data.sgd_gradient_unif_kl,
-  #             color="r",
-  #             label="$\|g\|_1$")
-  #     plt.legend()
-
-  #     plt.savefig(grad_unif_kl_output, format="pdf", dpi=DPI)
+    
 
   return params
