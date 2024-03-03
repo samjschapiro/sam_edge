@@ -80,7 +80,6 @@ def train(params,
   Returns:
     final parameters
   """
-  second_order = False
   @jit
   def loss_by_params(params, x_batched, y_batched):
     preds = model.apply(params, x_batched)
