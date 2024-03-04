@@ -163,7 +163,8 @@ class CNN(nn.Module):
     h = self.dense_def(h)
     return h
 
-
+# TODO: Implement a ResNet model
+  
 class MLP(nn.Module):
   """A standard multi-layer perceptron."""
   input_to_hidden_def: ModuleDef
@@ -177,7 +178,7 @@ class MLP(nn.Module):
     h = nn.relu(h)
     for ell in range(args.mlp_depth-2):
       h = (self.hidden_to_hidden_defs[ell])(h)
-      h = nn.relu(h)
+      h = nn.relu(h) # TODO: add a smooth activation
     h = self.output_def(h)
     return h
 

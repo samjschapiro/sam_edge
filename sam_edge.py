@@ -340,7 +340,7 @@ def train(params,
             raw_data_file.write(format_string.format(*columns))
 
     it_num += 1
-    n_iter_ = 15
+    n_iter_ = 25
     if second_order:
       params = ssam_update(params, x, y, eta, n_iter=n_iter_)
     else:
