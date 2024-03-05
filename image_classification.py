@@ -15,9 +15,26 @@
 
 """Perform image classification experiments regarding SAM and the edge of stability."""
 # Modification from haiku/examples/transformer/train.py
+import dataclasses
+import math
+import time
+
+import hessian_norm
+from jax import grad
+from jax import tree_util
+import jax.random as jrandom
+import jaxopt as jo
+import jax
+import optax
+import jax.numpy as jnp
+import matplotlib.pyplot as plt
+import more_tree_utils as mtu
+import tensorflow as tf
+import tensorflow_datasets as tfds
 import argparse
 import time
 from typing import Any, Sequence
+from jax_resnet import *
 
 from flax import linen as nn
 from jax import jit
@@ -54,7 +71,7 @@ parser.add_argument("--batch_size",
 parser.add_argument("--nn_architecture",
                     type=str,
                     default="MLP",
-                    choices=["CNN", "MLP"])
+                    choices=["CNN", "MLP", "WRN"])
 
 parser.add_argument("--dataset",
                     type=str,
@@ -129,7 +146,7 @@ parser.add_argument("--grad_unif_kl_output",
                     type=str,
                     default="figs/grad_unif_kl.pdf")
 
-parser.add_argument("--num_principal_components",
+parser.add_argument("--num_principal_comps",
                     type=int,
                     default=1)
 
@@ -243,7 +260,7 @@ if args.nn_architecture == "CNN":
                                  kernel_init=gn)
               )
   num_linear_layers = args.cnn_layers_per_block * args.cnn_num_blocks + 1
-else:
+elif args.nn_architecture == "MLP":
   model = MLP(input_to_hidden_def=nn.Dense(features=args.mlp_width,
                                            kernel_init=gn),
               hidden_to_hidden_defs = [nn.Dense(features=args.mlp_width,
@@ -252,6 +269,9 @@ else:
               output_def=nn.Dense(features=num_classes,
                                   kernel_init=gn))
   num_linear_layers = args.mlp_depth
+else:
+  model = ResNet18(n_classes=10)
+
 rng, subkey = jrandom.split(rng)
 params = model.init(subkey,
                     jnp.ones([args.batch_size,
@@ -273,7 +293,7 @@ def get_train_batches():
   # pylint: disable=g-long-lambda
   ds = ds.map(lambda x, y:
               (tf.cast(x, dtype=tf.float32)/256.0, tf.one_hot(y, num_classes)))
-  ds = ds.batch(args.batch_size, drop_remainder=True).repeat()
+  ds = ds.shuffle(args.batch_size).batch(args.batch_size, drop_remainder=True)
   return tfds.as_numpy(ds)
 
 
@@ -298,7 +318,7 @@ def get_test_batches(num_available_test_examples):
 
 # pylint: disable=unused-argument
 def loss(x, logits, y):
-  return optax.squared_error(logits, y)
+  return optax.l2_loss(logits, y)
 
 train_batches = get_train_batches()
 test_batches = get_test_batches(num_test_examples)
@@ -308,27 +328,211 @@ u, _ = next(iter(train_batches))
 mu = jnp.mean(u, axis=0, keepdims=True)
 train_batches = ((x - mu, y) for (x, y) in train_batches)
 test_batches = ((x - mu, y) for (x, y) in test_batches)
+steps_per_epoch = int(jnp.ceil(u.shape[0] / args.batch_size))
 
 
-params = sam_edge.train(params,
-                        model,
-                        args.second_order,
-                        loss,
-                        args.epochs,
-                        train_batches,
-                        args.step_size,
-                        args.rho,
-                        args.hessian_check_gap,
-                        args.eigs_curve_output,
-                        args.eigs_se_only_output,
-                        args.alignment_curve_output,
-                        args.loss_curve_output,
-                        args.raw_data_output,
-                        args.sam_grad_norm_output,
-                        args.grad_unif_kl_output,
-                        args.num_principal_components,
-                        args.time_limit_in_hours,
-                        rng)
+EPSILON = 1e-5
+DPI = 300
+n_iter_ = 25
+
+@jit
+def loss_by_params(params, x_batched, y_batched):
+  preds = model.apply(params, x_batched)
+  return jnp.mean(loss(x_batched, preds, y_batched))
+
+def abs_loss(logits, y):
+  return jnp.abs(logits - y)
+
+def apply_model2(params, x_batched, y_batched):
+  preds = model.apply(params, x_batched)
+  return jnp.mean(abs_loss(preds, y_batched))
+
+@jit
+def sam_neighbor(params, x, y):
+  grads = grad(loss_by_params)(params, x, y)
+  norm = mtu.get_vector_norm(grads)
+  return tree_util.tree_map(lambda p, g: p + args.rho * g/(norm + EPSILON),
+                            params,
+                            grads)
+  
+@jit
+def get_ssam_gradient(params, x, y, n_iter, beta_start):
+  betas = beta_start
+  # SSAM objective function
+  def ssam_func(beta, params_, x_, y_):
+      grads = grad(loss_by_params)(params_, x_, y_)
+      func_grads = grad(apply_model2)(params_, x_, y_)
+      return jnp.sum(jnp.array(tree_util.tree_leaves(tree_util.tree_map(lambda b, nabla_l, nabla_f: jnp.sum(-b*nabla_l - (b*nabla_f)**2), # MSE loss, so l_i'' is 1 #
+                              beta,
+                              grads,
+                              func_grads))))
+  pga = jo.ProjectedGradient(fun=ssam_func, projection=jo.projection.projection_l2_ball, stepsize=args.rho/2, maxiter=n_iter)
+  beta_star, _ = pga.run(betas, hyperparams_proj=args.rho, params_=params, x_=x, y_=y)
+  grad_location = tree_util.tree_map(lambda p, b: p + b, 
+                            params, 
+                            beta_star)
+  grads = grad(loss_by_params)(grad_location, x, y)
+  return grads 
+
+@jit
+def ssam_neighbor(params, x, y, n_iter, beta_start):
+  grads = get_ssam_gradient(params, x, y, n_iter, beta_start)
+  return tree_util.tree_map(lambda p, g: p - eta * g,
+                    params,
+                    grads)
+
+@jit
+def update(params, x, y, eta):
+  if args.rho > 0.0:
+    grad_location = sam_neighbor(params, x, y) 
+  else:
+    grad_location = params
+  grads = grad(loss_by_params)(grad_location, x, y)
+  return tree_util.tree_map(lambda p, g: p - eta * g,
+                            params,
+                            grads)
+@jit
+def ssam_update(params, x, y, eta, n_iter=5):
+  if args.rho > 0.0:
+    beta_start = sam_neighbor(params, x, y)
+    grad_location = ssam_neighbor(params, x, y, n_iter, beta_start) # Run projected gradient ascent to get SSAM neightbor
+  else:
+    grad_location = params
+  grads = grad(loss_by_params)(grad_location, x, y)
+  return tree_util.tree_map(lambda p, g: p - eta * g,
+                            params,
+                            grads)
+
+@jit
+def get_sam_gradient(params, x, y):
+  grad_location = sam_neighbor(params, x, y)
+  return grad(loss_by_params)(grad_location, x, y)
+
+################################################################
+eta = args.step_size
+ce = hessian_norm.CurvatureEstimator(loss_by_params, rng)
+
+print("starting training", flush=True)
+this_loss = None
+
+for epoch in range(args.epochs):
+  train_batches = get_train_batches()
+  test_batches = get_test_batches(num_test_examples)
+
+  # center the data
+  u, _ = next(iter(train_batches))
+  mu = jnp.mean(u, axis=0, keepdims=True)
+  train_batches = ((x - mu, y) for (x, y) in train_batches)
+  test_batches = ((x - mu, y) for (x, y) in test_batches)
+  steps_per_epoch = int(jnp.ceil(u.shape[0] / args.batch_size))
+
+  for x, y in train_batches:
+    if epoch % args.hessian_check_gap == 0:
+      this_loss = loss_by_params(params, x, y)
+      test_err = test_error_fn(params, model, test_batches)
+      original_gradient = grad(loss_by_params)(params, x, y)
+      sam_gradient = get_sam_gradient(params, x, y)
+      if epoch == 0:
+        prev_original_gradient = original_gradient
+        prev_sam_gradient = sam_gradient
+      if args.num_principal_comps == 1:
+        curvature, principal_dir = ce.curvature_and_direction(params, x, y)
+        this_hessian_norm = jnp.abs(curvature)
+      else:
+        print("calculating principal components", flush=True)
+        eigs, principal_dir = ce.hessian_top_eigenvalues(params, x, y, args.num_principal_comps)
+        print("done calculating principal components", flush=True)
+        this_hessian_norm = eigs[0]
+
+      if args.second_order:
+        ssam_gradient = get_ssam_gradient(params, x, y, n_iter=n_iter_, beta_start=sam_gradient)
+        ssamgrad_hessian_alignment = mtu.get_alignment(ssam_gradient,
+                                              principal_dir)
+        ssam_sam_grads_alignment = mtu.get_alignment(sam_gradient, ssam_gradient)   
+
+      grad_hessian_alignment = mtu.get_alignment(original_gradient,
+                                                  principal_dir)
+      samgrad_hessian_alignment = mtu.get_alignment(sam_gradient,
+                                                    principal_dir)
+      sam_succ_grad_alignment = mtu.get_alignment(sam_gradient, prev_sam_gradient)
+      succ_grad_alignment = mtu.get_alignment(original_gradient, prev_original_gradient)
+      prev_sam_gradient = sam_gradient
+      prev_original_gradient = original_gradient
+      print("--------------", flush=True)
+      if args.second_order:
+        formatting_string = ("Epoch = {}, "
+                      + "Train Loss = {}, "
+                       + "Test Loss = {}, "
+                      + "lambda1: {}, "
+                      + "2/eta: {}, "
+                      + "g_alignment = {}, "
+                      + "sg_alignment = {}, "
+                      + "ssg_alignment = {}, "
+                      + "ssam_sam_g_alignment = {}")
+        print(formatting_string.format(epoch,
+                                      this_loss,
+                                      test_err,
+                                      this_hessian_norm,
+                                      2.0/eta,
+                                      grad_hessian_alignment,
+                                      samgrad_hessian_alignment, 
+                                      ssamgrad_hessian_alignment,
+                                      ssam_sam_grads_alignment, 
+                                      flush=True))
+      else:
+        formatting_string = ("Epoch = {}, "
+                            + "Train Loss = {}, "
+                            + "Test Loss = {}, "
+                            + "lambda1: {}, "
+                            + "2/eta: {}, "
+                            + "g_alignment = {}, "
+                            + "sg_alignment = {},"
+                            + "succ_g_alignment = {},"
+                            + "succ_sg_alignment = {}")
+        print(formatting_string.format(epoch,
+                                      this_loss,
+                                      test_err,
+                                      this_hessian_norm,
+                                      2.0/eta,
+                                      grad_hessian_alignment,
+                                      samgrad_hessian_alignment, 
+                                      succ_grad_alignment,
+                                      sam_succ_grad_alignment,
+                                      flush=True))
+      if args.num_principal_comps > 1:
+        print("eigs = {}".format(eigs, flush=True))
+      if args.raw_data_filename:
+        with open(args.raw_data_filename, "a") as raw_data_file:
+          if args.second_order: 
+            columns = [epoch,
+                      this_loss,
+                      test_err,
+                      this_hessian_norm,
+                      2.0/eta,
+                      grad_hessian_alignment,
+                      samgrad_hessian_alignment,
+                      ssamgrad_hessian_alignment,
+                      ssam_sam_grads_alignment]
+            format_string = "{} "*(len(columns)-1) + "{}\n"
+            raw_data_file.write(format_string.format(*columns))
+          else:
+            columns = [epoch,
+                      this_loss,
+                      test_err, 
+                      this_hessian_norm,
+                        2.0/eta,
+                        grad_hessian_alignment,
+                        samgrad_hessian_alignment,
+                        succ_grad_alignment,
+                        sam_succ_grad_alignment]
+            format_string = "{} "*(len(columns)-1) + "{}\n"
+            raw_data_file.write(format_string.format(*columns))
+
+    if args.second_order:
+      params = ssam_update(params, x, y, eta, n_iter=n_iter_)
+    else:
+      params = update(params, x, y, eta)
+
 
 test_err = test_error_fn(params, model, test_batches)
 print("==============")

@@ -30,11 +30,13 @@ import optax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import more_tree_utils as mtu
+import tensorflow as tf
+import tensorflow_datasets as tfds
 
 EPSILON = 1e-5
 DPI = 300
+n_iter_ = 25
 
-# pylint: disable=anomalous-backslash-in-string
 
 
 def train(params,
@@ -42,44 +44,30 @@ def train(params,
           second_order,
           loss,
           epochs,
+          steps_per_epoch,
           train_batches,
+          test_batches,
           step_size,
           rho,  # for SAM -- if rho is 0.0, SAM is not used
           hessian_check_gap,
-          eigs_curve_filename,
-          eigs_se_only_filename,
-          alignment_curve_filename,
-          loss_curve_filename,
           raw_data_filename,
-          sam_grad_norm_output,
-          grad_unif_kl_output,
           num_principal_comps,
-          time_limit_in_hours,
           rng):
-  """Train a model using SAM, and plot statistics.
+  
+  # def test_error_fn(params_, batches):
+  #   @jit
+  #   def batch_error(images, targets):
+  #     predicted_class = jnp.argmax(model.apply(params_, images), axis=1)
+  #     return jnp.mean(predicted_class != targets)
 
-  Args:
-    params: parameters of the model
-    model: the model
-    loss: the loss function
-    train_batches: training data
-    step_size: learning rate
-    rho: distance uphill to evaluate the gradient
-    hessian_check_gap: time in seconds hessian evaluation
-    eigs_curve_filename: name of PDF file for eigenvalue/edge plots
-    eigs_se_only_filename: name of PDF file for eigenvalue/edge plots
-            without 2/eta
-    alignment_curve_filename: name of PDF file for plots of alignments
-    loss_curve_filename: name of PDF file for loss curves
-    raw_data_filename: name of file for raw data
-    num_principal_comps: number of the principal components of the
-            hessian to evaluate
-    time_limit_in_hours: Time limit
-    rng: key
-
-  Returns:
-    final parameters
-  """
+  #   sum_batch_errors = 0.0
+  #   num_batches = 0
+  #   for batch in batches:
+  #     x, y = batch
+  #     sum_batch_errors += batch_error(x, y)
+  #     num_batches += 1
+  #   return sum_batch_errors/num_batches
+  
   @jit
   def loss_by_params(params, x_batched, y_batched):
     preds = model.apply(params, x_batched)
@@ -87,11 +75,6 @@ def train(params,
   
   def abs_loss(logits, y):
     return jnp.abs(logits - y)
-  
-  # @jit
-  # def apply_model(params, x_batched):
-  #   return 0.1+jnp.sum(jnp.argmax(model.apply(params, x_batched), axis=1))-0.1
-
 
   def apply_model2(params, x_batched, y_batched):
     preds = model.apply(params, x_batched)
@@ -131,7 +114,6 @@ def train(params,
                       params,
                       grads)
 
-
   @jit
   def update(params, x, y, eta):
     if rho > 0.0:
@@ -159,46 +141,21 @@ def train(params,
     grad_location = sam_neighbor(params, x, y)
     return grad(loss_by_params)(grad_location, x, y)
 
+################################################################
   eta = step_size
-
-  @dataclasses.dataclass
-  class PlotData:
-    # pylint: disable=g-bare-generic
-    training_times: list
-    eigenvalues: list
-    sam_edges: list
-    g_alignments: list
-    sam_gradients: list
-    sam_grad_unif_kl: list
-    sgd_gradients: list
-    sgd_gradient_unif_kl: list
-    sg_alignments: list
-    training_losses: list
-  plot_data = PlotData(list(),
-                       list(),
-                       list(),
-                       list(),
-                       list(),
-                       list(),
-                       list(),
-                       list(),
-                       list(),
-                       list())
-  # if num_principal_comps > 1:
-  #   for i in range(num_principal_comps):
-  #     plot_data.eigenvalues.append(list())
   ce = hessian_norm.CurvatureEstimator(loss_by_params, rng)
 
   print("starting training", flush=True)
   this_loss = None
-  it_num = 0
+  
+  epoch = 0
   for x, y in train_batches:
-    if it_num == epochs:
-      break
-    if it_num % hessian_check_gap == 0:
+    if epoch % hessian_check_gap == 0:
+      this_loss = loss_by_params(params, x, y)
+      # test_err = test_error_fn(params, test_batches)
       original_gradient = grad(loss_by_params)(params, x, y)
       sam_gradient = get_sam_gradient(params, x, y)
-      if it_num == 0:
+      if epoch == 0:
         prev_original_gradient = original_gradient
         prev_sam_gradient = sam_gradient
       if num_principal_comps == 1:
@@ -210,13 +167,11 @@ def train(params,
                                                          num_principal_comps)
         print("done calculating principal components", flush=True)
         this_hessian_norm = eigs[0]
-      this_loss = loss_by_params(params, x, y)
+
       if second_order:
-        ssam_gradient = get_ssam_gradient(params, x, y, n_iter=5, beta_start=sam_gradient)
+        ssam_gradient = get_ssam_gradient(params, x, y, n_iter=n_iter_, beta_start=sam_gradient)
         ssamgrad_hessian_alignment = mtu.get_alignment(ssam_gradient,
                                               principal_dir)
-        ssam_gradient_norm = mtu.get_vector_norm(ssam_gradient)
-        ssam_gradient_l1_norm = mtu.get_vector_l1_norm(ssam_gradient)
         ssam_sam_grads_alignment = mtu.get_alignment(sam_gradient, ssam_gradient)   
 
       grad_hessian_alignment = mtu.get_alignment(original_gradient,
@@ -227,46 +182,22 @@ def train(params,
       succ_grad_alignment = mtu.get_alignment(original_gradient, prev_original_gradient)
       prev_sam_gradient = sam_gradient
       prev_original_gradient = original_gradient
-      original_gradient_norm = mtu.get_vector_norm(original_gradient)
-      sam_gradient_norm = mtu.get_vector_norm(sam_gradient)
-      original_gradient_l1_norm = mtu.get_vector_l1_norm(original_gradient)
-      sam_gradient_l1_norm = mtu.get_vector_l1_norm(sam_gradient)
-
-      if rho == 0.0:
-        sam_edge = 2.0/eta
-      else:
-        sam_edge = ((original_gradient_norm/(2.0*rho))
-                    *(math.sqrt(1.0
-                                + 8.0*rho/(eta*original_gradient_norm))
-                      - 1.0))
       print("--------------", flush=True)
       if second_order:
         formatting_string = ("Epoch = {}, "
-                      + "Loss = {}, "
+                      + "Train Loss = {}, "
+                      # + "Test Loss = {}, "
                       + "lambda1: {}, "
                       + "2/eta: {}, "
-                      + "sam_edge: {}, "
-                      + "|| g ||_2 = {}, "
-                      + "|| g_sam ||_2 = {}, "
-                      + "|| g_ssam ||_2 = {}, "
-                      + "|| g ||_1 = {}, "
-                      + "|| g_sam||_1 = {}, "
-                      + "|| g_ssam||_1 = {}, "
                       + "g_alignment = {}, "
                       + "sg_alignment = {}, "
                       + "ssg_alignment = {}, "
                       + "ssam_sam_g_alignment = {}")
-        print(formatting_string.format(it_num,
+        print(formatting_string.format(epoch,
                                       this_loss,
+                                      # test_err,
                                       this_hessian_norm,
                                       2.0/eta,
-                                      sam_edge,
-                                      original_gradient_norm,
-                                      sam_gradient_norm,
-                                      ssam_gradient_norm,
-                                      original_gradient_l1_norm,
-                                      sam_gradient_l1_norm,
-                                      ssam_gradient_l1_norm,
                                       grad_hessian_alignment,
                                       samgrad_hessian_alignment, 
                                       ssamgrad_hessian_alignment,
@@ -274,27 +205,19 @@ def train(params,
                                       flush=True))
       else:
         formatting_string = ("Epoch = {}, "
-                            + "Loss = {}, "
+                            + "Train Loss = {}, "
+                            + "Test Loss = {}, "
                             + "lambda1: {}, "
                             + "2/eta: {}, "
-                            + "sam_edge: {}, "
-                            + "|| g ||_2 = {}, "
-                            + "|| g_sam ||_2 = {}, "
-                            + "|| g ||_1 = {}, "
-                            + "|| g_sam||_1 = {}, "
                             + "g_alignment = {}, "
                             + "sg_alignment = {},"
                             + "succ_g_alignment = {},"
                             + "succ_sg_alignment = {}")
-        print(formatting_string.format(it_num,
+        print(formatting_string.format(epoch,
                                       this_loss,
+                                      # test_err,
                                       this_hessian_norm,
                                       2.0/eta,
-                                      sam_edge,
-                                      original_gradient_norm,
-                                      sam_gradient_norm,
-                                      original_gradient_l1_norm,
-                                      sam_gradient_l1_norm,
                                       grad_hessian_alignment,
                                       samgrad_hessian_alignment, 
                                       succ_grad_alignment,
@@ -305,17 +228,11 @@ def train(params,
       if raw_data_filename:
         with open(raw_data_filename, "a") as raw_data_file:
           if second_order: 
-            columns = [it_num,
+            columns = [epoch,
                       this_loss,
+                      # test_err,
                       this_hessian_norm,
                       2.0/eta,
-                      sam_edge,
-                      original_gradient_norm,
-                      sam_gradient_norm,
-                      ssam_gradient_norm,
-                      original_gradient_l1_norm,
-                      sam_gradient_l1_norm,
-                      ssam_gradient_l1_norm,
                       grad_hessian_alignment,
                       samgrad_hessian_alignment,
                       ssamgrad_hessian_alignment,
@@ -323,15 +240,11 @@ def train(params,
             format_string = "{} "*(len(columns)-1) + "{}\n"
             raw_data_file.write(format_string.format(*columns))
           else:
-            columns = [it_num,
+            columns = [epoch,
                       this_loss,
+                      # test_err, 
                       this_hessian_norm,
                         2.0/eta,
-                        sam_edge,
-                        original_gradient_norm,
-                        sam_gradient_norm,
-                        original_gradient_l1_norm,
-                        sam_gradient_l1_norm,
                         grad_hessian_alignment,
                         samgrad_hessian_alignment,
                         succ_grad_alignment,
@@ -339,13 +252,10 @@ def train(params,
             format_string = "{} "*(len(columns)-1) + "{}\n"
             raw_data_file.write(format_string.format(*columns))
 
-    it_num += 1
-    n_iter_ = 25
     if second_order:
       params = ssam_update(params, x, y, eta, n_iter=n_iter_)
     else:
       params = update(params, x, y, eta)
-
-    
-
+    epoch += 1/steps_per_epoch
+    print(epoch)
   return params
